@@ -1,5 +1,5 @@
 [package]
-name = "gguf_parser"
+name = "gguf_rust"
 version = "0.1.0"
 edition = "2024"
 

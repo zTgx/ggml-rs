@@ -1,2 +1,2 @@
-# GGUF parser
+# GGUF Rust
 
