@@ -1,5 +1,5 @@
 use clap::Parser;
-use gguf_rust::parse_gguf_filename;
+use ggml_rs::parse_gguf_filename;
 use serde_json::json;
 
 #[derive(Parser, Debug)]

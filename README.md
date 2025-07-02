@@ -1,2 +1,2 @@
-# GGUF Rust
+# GGML Rust
 

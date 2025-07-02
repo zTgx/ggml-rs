@@ -1,7 +1,12 @@
 [package]
-name = "gguf_rust"
+name = "ggml-rs"
 version = "0.1.0"
 edition = "2024"
+description = "GGML for Rust"
+license = "MIT"
+repository = "https://github.com/zTgx/ggml-rs"
+readme = "README.md"
+keywords = ["ggml", "llm", "tensor", "algebra"]
 
 [dependencies]
 regex = "1.10"
