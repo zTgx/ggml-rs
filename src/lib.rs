@@ -1,132 +1,197 @@
-use regex::Regex;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+pub mod gguf;
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct GGUFComponents {
-    pub base_name: Option<String>,
-    pub size_label: Option<String>,
-    pub fine_tune: Option<String>,
-    pub version: String,
-    pub encoding: Option<String>,
-    pub type_field: Option<String>,
-    pub shard: Option<String>,
+pub const LLAMA_DEFAULT_SEED: u32 = 0xFFFFFFFF;
+
+pub const LLAMA_TOKEN_NULL: i32 = -1;
+
+pub const LLAMA_FILE_MAGIC_GGLA: u32 = 0x67676c61; // 'ggla'
+pub const LLAMA_FILE_MAGIC_GGSN: u32 = 0x6767736e; // 'ggsn'
+pub const LLAMA_FILE_MAGIC_GGSQ: u32 = 0x67677371; // 'ggsq'
+
+pub const LLAMA_SESSION_MAGIC: u32 = LLAMA_FILE_MAGIC_GGSN;
+pub const LLAMA_SESSION_VERSION: u32 = 9;
+
+pub const LLAMA_STATE_SEQ_MAGIC: u32 = LLAMA_FILE_MAGIC_GGSQ;
+pub const LLAMA_STATE_SEQ_VERSION: u32 = 2;
+
+// Type aliases
+pub type LlamaPos = i32;
+pub type LlamaToken = i32;
+pub type LlamaSeqId = i32;
+
+// Vocabulary types
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaVocabType {
+    None = 0, // For models without vocab
+    Spm = 1,  // LLaMA tokenizer based on byte-level BPE with byte fallback
+    Bpe = 2,  // GPT-2 tokenizer based on byte-level BPE
+    Wpm = 3,  // BERT tokenizer based on WordPiece
+    Ugm = 4,  // T5 tokenizer based on Unigram
+    Rwkv = 5, // RWKV tokenizer based on greedy tokenization
 }
 
-pub fn parse_gguf_filename(filename: &str) -> Option<GGUFComponents> {
-    let gguf_regex = Regex::new(
-        r"^(?P<BaseName>[A-Za-z0-9\s]*(?:(?:-(?:(?:[A-Za-z\s][A-Za-z0-9\s]*)|(?:[0-9\s]*)))*))-(?:(?P<SizeLabel>(?:\d+x)?(?:\d+\.)?\d+[A-Za-z](?:-[A-Za-z]+(\d+\.)?\d+[A-Za-z]+)?)(?:-(?P<FineTune>[A-Za-z0-9\s-]+))?)?-(?:(?P<Version>v\d+(?:\.\d+)*))(?:-(?P<Encoding>[\w_]+))?(?:-(?P<Type>LoRA|vocab))?(?:-(?P<Shard>\d{5}-of-\d{5}))?\.gguf$"
-    ).expect("Failed to compile regex");
+// Pre-tokenization types
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaVocabPreType {
+    Default = 0,
+    Llama3 = 1,
+    DeepseekLlm = 2,
+    DeepseekCoder = 3,
+    Falcon = 4,
+    Mpt = 5,
+    Starcoder = 6,
+    Gpt2 = 7,
+    Refact = 8,
+    CommandR = 9,
+    Stablelm2 = 10,
+    Qwen2 = 11,
+    Olmo = 12,
+    Dbrx = 13,
+    Smaug = 14,
+    Poro = 15,
+    Chatglm3 = 16,
+    Chatglm4 = 17,
+    Viking = 18,
+    Jais = 19,
+    Tekken = 20,
+    Smolllm = 21,
+    Codeshell = 22,
+    Bloom = 23,
+    Gpt3Finnish = 24,
+    Exaone = 25,
+    Chameleon = 26,
+    Minerva = 27,
+    Deepseek3Llm = 28,
+    Gpt4o = 29,
+    Superbpe = 30,
+    Trillion = 31,
+    Bailingmoe = 32,
+    Llama4 = 33,
+    Pixtral = 34,
+    SeedCoder = 35,
+}
 
-    match gguf_regex.captures(filename) {
-        Some(caps) => {
-            let mut encoding = caps.name("Encoding").map(|m| m.as_str().to_string());
-            let type_field = caps.name("Type").map(|m| m.as_str().to_string());
+// Rope types
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaRopeType {
+    None = -1,
+    Norm = 0,
+    Neox = 1,   // GGML_ROPE_TYPE_NEOX
+    Mrope = 2,  // GGML_ROPE_TYPE_MROPE
+    Vision = 3, // GGML_ROPE_TYPE_VISION
+}
 
-            // Post-process to handle LoRA and vocab exclusion from Encoding
-            if let Some(enc) = encoding.clone() {
-                if enc == "LoRA" || enc == "vocab" {
-                    encoding = None;
-                }
-            }
+// Token types
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaTokenType {
+    Undefined = 0,
+    Normal = 1,
+    Unknown = 2,
+    Control = 3,
+    UserDefined = 4,
+    Unused = 5,
+    Byte = 6,
+}
 
-            Some(GGUFComponents {
-                base_name: caps.name("BaseName").map(|m| m.as_str().to_string()),
-                size_label: caps.name("SizeLabel").map(|m| m.as_str().to_string()),
-                fine_tune: caps.name("FineTune").map(|m| m.as_str().to_string()),
-                version: caps
-                    .name("Version")
-                    .map_or("v1.0".to_string(), |m| m.as_str().to_string()),
-                encoding,
-                type_field,
-                shard: caps.name("Shard").map(|m| m.as_str().to_string()),
-            })
-        }
-        None => None,
+// Token attributes (bitflags)
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct LlamaTokenAttr: u32 {
+        const UNDEFINED = 0;
+        const UNKNOWN = 1 << 0;
+        const UNUSED = 1 << 1;
+        const NORMAL = 1 << 2;
+        const CONTROL = 1 << 3;  // SPECIAL?
+        const USER_DEFINED = 1 << 4;
+        const BYTE = 1 << 5;
+        const NORMALIZED = 1 << 6;
+        const LSTRIP = 1 << 7;
+        const RSTRIP = 1 << 8;
+        const SINGLE_WORD = 1 << 9;
     }
 }
 
-pub fn parse_gguf_filename_map(filename: &str) -> Option<HashMap<String, Option<String>>> {
-    parse_gguf_filename(filename).map(|components| {
-        let mut map = HashMap::new();
-        map.insert("BaseName".to_string(), components.base_name);
-        map.insert("SizeLabel".to_string(), components.size_label);
-        map.insert("FineTune".to_string(), components.fine_tune);
-        map.insert("Version".to_string(), Some(components.version));
-        map.insert("Encoding".to_string(), components.encoding);
-        map.insert("Type".to_string(), components.type_field);
-        map.insert("Shard".to_string(), components.shard);
-        map
-    })
+// Model file types
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaFtype {
+    AllF32 = 0,
+    MostlyF16 = 1,
+    MostlyQ4_0 = 2,
+    MostlyQ4_1 = 3,
+    MostlyQ8_0 = 7,
+    MostlyQ5_0 = 8,
+    MostlyQ5_1 = 9,
+    MostlyQ2K = 10,
+    MostlyQ3KS = 11,
+    MostlyQ3KM = 12,
+    MostlyQ3KL = 13,
+    MostlyQ4KS = 14,
+    MostlyQ4KM = 15,
+    MostlyQ5KS = 16,
+    MostlyQ5KM = 17,
+    MostlyQ6K = 18,
+    MostlyIq2Xxs = 19,
+    MostlyIq2Xs = 20,
+    MostlyQ2KS = 21,
+    MostlyIq3Xs = 22,
+    MostlyIq3Xxs = 23,
+    MostlyIq1S = 24,
+    MostlyIq4Nl = 25,
+    MostlyIq3S = 26,
+    MostlyIq3M = 27,
+    MostlyIq2S = 28,
+    MostlyIq2M = 29,
+    MostlyIq4Xs = 30,
+    MostlyIq1M = 31,
+    MostlyBf16 = 32,
+    MostlyTq1_0 = 36,
+    MostlyTq2_0 = 37,
+    Guessed = 1024,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
+// Rope scaling types
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaRopeScalingType {
+    Unspecified = -1,
+    None = 0,
+    Linear = 1,
+    Yarn = 2,
+    Longrope = 3,
+}
+pub const LLAMA_ROPE_SCALING_TYPE_MAX_VALUE: i32 = 3;
 
-    #[test]
-    fn test_parse_gguf_filename() {
-        let test_cases = vec![
-            (
-                "Mixtral-8x7B-v0.1-KQ2.gguf",
-                json!({
-                    "BaseName": "Mixtral",
-                    "SizeLabel": "8x7B",
-                    "FineTune": null,
-                    "Version": "v0.1",
-                    "Encoding": "KQ2",
-                    "Type": null,
-                    "Shard": null
-                }),
-            ),
-            (
-                "Grok-100B-v1.0-Q4_0-00003-of-00009.gguf",
-                json!({
-                    "BaseName": "Grok",
-                    "SizeLabel": "100B",
-                    "FineTune": null,
-                    "Version": "v1.0",
-                    "Encoding": "Q4_0",
-                    "Type": null,
-                    "Shard": "00003-of-00009"
-                }),
-            ),
-            (
-                "Hermes-2-Pro-Llama-3-8B-v1.0-F16.gguf",
-                json!({
-                    "BaseName": "Hermes-2-Pro-Llama-3",
-                    "SizeLabel": "8B",
-                    "FineTune": null,
-                    "Version": "v1.0",
-                    "Encoding": "F16",
-                    "Type": null,
-                    "Shard": null
-                }),
-            ),
-            (
-                "Phi-3-mini-3.8B-ContextLength4k-instruct-v1.0.gguf",
-                json!({
-                    "BaseName": "Phi-3-mini",
-                    "SizeLabel": "3.8B-ContextLength4k",
-                    "FineTune": "instruct",
-                    "Version": "v1.0",
-                    "Encoding": null,
-                    "Type": null,
-                    "Shard": null
-                }),
-            ),
-            ("not-a-known-arrangement.gguf", json!(null)),
-        ];
+// Pooling types
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaPoolingType {
+    Unspecified = -1,
+    None = 0,
+    Mean = 1,
+    Cls = 2,
+    Last = 3,
+    Rank = 4,
+}
 
-        for (filename, expected) in test_cases {
-            let result = parse_gguf_filename_map(filename);
-            let result_json = json!(result);
-            assert_eq!(
-                result_json, expected,
-                "Failed for filename: {}. Expected: {:?}, Got: {:?}",
-                filename, expected, result_json
-            );
-        }
-    }
+// Attention types
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaAttentionType {
+    Unspecified = -1,
+    Causal = 0,
+    NonCausal = 1,
+}
+
+// Split modes
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaSplitMode {
+    None = 0,
+    Layer = 1,
+    Row = 2,
 }
